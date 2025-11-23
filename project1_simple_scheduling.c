@@ -1,5 +1,5 @@
 /*
-[run queue / wait queue 전체 로직]
+[run queue / wait queue 전체 로직 구현 순서]
 
 1. Parent가 CPU를 준다. 
 2. Child가 CPU burst를 소모한다.
@@ -41,6 +41,34 @@ typedef struct {
 WaitProc waitQ[100];
 int wait_front = 0, wait_rear = 0;
 
+// 7단계: run queue 구조체 추가 (Round Robin용)
+int runQ[100]; // run queue 배열 (최대 100개 프로세스 저장 가능)
+int run_front = 0 ; // run queue의 앞쪽 인덱스 (dequeue할 위치)
+int run_rear = 0; // run queue의 뒤쪽 인덱스 (enqueue할 위치)
+
+// run queue가 비었는지 확인
+int is_runQ_empty() {
+    return run_front == run_rear;
+}
+
+// run queue에 pid 넣기
+void enqueue_runQ(int pid) {
+    runQ[run_rear] = pid; // rear 위치에 pid 저장
+    run_rear++; // rear를 다음 위치로 이동
+}
+
+// run queue에서 pid 하나 꺼내기
+int dequeue_runQ() {
+    if (is_runQ_empty()) return -1; // 큐가 비어있으면 -1 반환
+    int pid = runQ[run_front];  // front 위치의 pid 가져오기
+    run_front++;   // front를 다음 위치로 이동
+    // 너무 많이 커지는 걸 방지하기 위해 앞쪽으로 땡기기 (간단 리셋)
+    if (run_front == run_rear) {
+        run_front = run_rear = 0;
+    }
+    return pid;
+}
+
 // 5단계: run queue에서 wait queue로 이동시키는 함수 추가
 void move_to_waitQ(int pid, int io_burst) {
     waitQ[wait_rear].pid = pid;
@@ -48,8 +76,9 @@ void move_to_waitQ(int pid, int io_burst) {
     wait_rear++;
 }
 
-// 6단계: wait queue IO 감소 함수 추가
+// 6단계: wait queue IO 감소 함수 추가 + 7단계: IO 끝난 프로세스는 run queue로 복귀
 void process_waitQ() {
+    // 1) IO burst 1씩 감소시키기
     for (int i = wait_front; i < wait_rear; i++) {
         waitQ[i].io_burst--;
 
@@ -57,8 +86,27 @@ void process_waitQ() {
         printf("[Parent] Processing IO... Child %d (remaining IO: %d)\n",
             waitQ[i].pid, waitQ[i].io_burst);
     }
+
+    // 2) IO가 끝난 프로세스들을 run queue로 보내고, waitQ 압축
+    int write_idx = wait_front;  // 살아남은 애들만 앞으로 땡기기
+    for (int i = wait_front; i < wait_rear; i++) {
+        if (waitQ[i].io_burst <= 0) {
+            // 7단계: IO 끝 → run queue로 이동
+            printf("[Parent] IO complete. Child %d moved back to RUN queue.\n",
+                    waitQ[i].pid);
+            enqueue_runQ(waitQ[i].pid);
+        } else {
+            // 아직 IO 남은 애들은 waitQ에 유지
+            waitQ[write_idx] = waitQ[i];
+            write_idx++;
+        }
+    }
+    // wait_rear 갱신 (front는 0만 쓴다고 보면 됨)
+    wait_rear = write_idx;
 }
 
+
+// CPU timeslice 1 tick 보내기
 void send_timeslice(int msgid, pid_t child_pid) {
 struct msgbuf msg;
 
@@ -106,7 +154,7 @@ int main() {
     // 2) child PID 저장 배열
     pid_t pids[10];
 
-    // 3) 10개 child 생성
+    // 3) 10개 child 생성 + run queue에 추가
     for (int i = 0; i < 10; i++) {
         pid_t pid = fork();
 
@@ -122,13 +170,21 @@ int main() {
         } else {
             // parent에 저장
             pids[i] = pid;
+            // 초기에 모든 child를 run queue에 추가
+            enqueue_runQ(pid);
         }
     }
 
     // ---- 부모가 여기서 스케줄링 루프 돌게 될 예정 ----
     while (1) {
-        // 1) child 0에게 CPU 1 tick 부여 (임시 테스트용)
-        send_timeslice(msgid, pids[0]);
+        // 1단계: run queue에서 다음 프로세스를 선택하여 CPU를 준다 (Round Robin)
+        if (!is_runQ_empty()) {
+            int next_pid = dequeue_runQ();
+            send_timeslice(msgid, next_pid);
+            
+            // CPU를 받은 프로세스는 다시 run queue 맨 뒤로 (Round Robin)
+            enqueue_runQ(next_pid);
+        }
 
         // 4단계: Parent는 IO burst 메시지를 받는다
         struct msgbuf recv;
