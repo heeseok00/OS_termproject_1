@@ -24,13 +24,28 @@
 #include <string.h>
 #include <sys/wait.h>
 
-// 부모가 자식에게 보내는 기본 코드
+// 부모가 자식에게 보내는 메시지 구조체
 
 struct msgbuf {
     long mtype; // 메시지 타입입
     int pid; // 전달자 PID
     int value; //burst time
 };
+
+// wait queue 구조체
+typedef struct {
+    int pid;
+    int io_burst;
+} WaitProc;
+
+WaitProc waitQ[100];
+int wait_front = 0, wait_rear = 0;
+
+void move_to_waitQ(int pid, int io_burst) {
+    waitQ[wait_rear].pid = pid;
+    waitQ[wait_rear].io_burst = io_burst;
+    wait_rear++;
+}
 
 void send_timeslice(int msgid, pid_t child_pid) {
 struct msgbuf msg;
@@ -40,7 +55,7 @@ msg.value = 1; //CPU time slice = 1 tick
 msgsnd(msgid,&msg,0,0);
 }
 
-// Child 코드드
+// Child 코드
 void exe_child(int msgid) {
     struct msgbuf msg;
 
@@ -108,7 +123,12 @@ int main() {
         while (msgrcv(msgid, &recv, sizeof(recv) - sizeof(long), 1, IPC_NOWAIT) != -1) {
             printf("[Parent] Child %d requested IO. IO burst = %d\n",
                     recv.pid, recv.value);
+
+            move_to_waitQ(recv.pid,recv.value); 
+                
         }
+
+        
         sleep(1);
     }
 
